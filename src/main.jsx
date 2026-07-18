@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../styles.css";
 
-const GOOGLE_CLIENT_ID = "207239565042-psnm8rk8a8q8uo57jj2gerl8d56gf03q.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = "862579545815-1tj1sshsv2n58ekmlsp9cqv5rrn0pg6d.apps.googleusercontent.com";
 const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.send",

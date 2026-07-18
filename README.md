@@ -53,3 +53,36 @@ https://www.googleapis.com/auth/gmail.labels
 ```
 
 After adding that scope, remove the app from your Google account permissions and sign in again so Google asks for the new permission.
+
+## Node.js setup (Windows)
+
+Recommended Node.js version: 18.x (project pinned in `.nvmrc`).
+
+- To install automatically (requires `winget` and elevated PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-node-windows.ps1
+```
+
+- To install via `winget` directly:
+
+```powershell
+winget install --id OpenJS.NodeJS.LTS -e
+```
+
+- Or install `nvm-windows` and use it:
+
+```powershell
+# Install nvm-windows (see https://github.com/coreybutler/nvm-windows)
+nvm install 18
+nvm use 18
+```
+
+Verify installation:
+
+```powershell
+node -v
+npm -v
+```
+
+The project `package.json` includes an `engines.node` field recommending Node >=18.
