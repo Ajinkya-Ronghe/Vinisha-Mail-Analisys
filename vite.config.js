@@ -5,10 +5,10 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 8000,
     proxy: {
-      "/ollama": {
-        target: "http://127.0.0.1:11434",
+      "/api": {
+        target: "http://127.0.0.1:8001",
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/ollama/, "")
+        rewrite: (path) => path.replace(/^\/api/, "")
       }
     }
   }

@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../styles.css";
+import { readMailboxCache, writeMailboxCache } from "./mailboxCache.js";
 
-const GOOGLE_CLIENT_ID = "862579545815-1tj1sshsv2n58ekmlsp9cqv5rrn0pg6d.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "").trim();
 const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.send",
@@ -11,8 +12,10 @@ const GMAIL_SCOPES = [
 ].join(" ");
 const GMAIL_PAGE_SIZE = 100;
 const GMAIL_DETAIL_BATCH_SIZE = 10;
-const OLLAMA_MODEL = "llama3.2:latest";
 const SUSPICIOUS_LABEL_NAME = "AI Suspicious";
+const ATTACHMENT_SAMPLE_LIMIT = 512 * 1024;
+const GOOGLE_SESSION_KEY = "maildesk.google-session.v1";
+const SESSION_EXPIRY_MARGIN_MS = 60 * 1000;
 
 const folders = [
   { id: "inbox", name: "Inbox", gmailLabel: "INBOX" },
@@ -46,6 +49,9 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const tokenClientRef = useRef(null);
   const toastTimerRef = useRef(0);
+  const mailboxLoadsRef = useRef(new Map());
+  const activeMailboxCacheRef = useRef(null);
+  const sessionRestoreAttemptedRef = useRef(false);
 
   function notify(text) {
     setToast(text);
@@ -55,6 +61,7 @@ function App() {
 
   useEffect(() => {
     function initGoogleLogin() {
+      if (!GOOGLE_CLIENT_ID) return;
       if (!window.google?.accounts?.oauth2) {
         setTimeout(initGoogleLogin, 300);
         return;
@@ -68,20 +75,39 @@ function App() {
             notify(response.error);
             return;
           }
+          saveGoogleSession(response);
           setAccessToken(response.access_token);
           setGmailReady(true);
           await loadGmailMailbox(response.access_token, folder, query);
         }
       });
+
+      if (!sessionRestoreAttemptedRef.current) {
+        sessionRestoreAttemptedRef.current = true;
+        const session = readGoogleSession();
+        if (session) {
+          setAccessToken(session.accessToken);
+          setGmailReady(true);
+          loadGmailMailbox(session.accessToken, folder, query);
+        }
+      }
     }
 
     initGoogleLogin();
     return () => clearTimeout(toastTimerRef.current);
   }, []);
 
+  useEffect(() => {
+    const context = activeMailboxCacheRef.current;
+    if (!gmailReady || !context || loading || messages.some((message) => message.aiRisk?.status === "scanning")) return;
+    writeMailboxCache(context.account, context.folder, context.query, messages).catch(() => {
+      // Cache failures must never stop Gmail or AI analysis.
+    });
+  }, [messages, loading, aiScanning, gmailReady]);
+
   async function requestGoogleLogin() {
-    if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes("PASTE_YOUR")) {
-      notify("Add your Google OAuth client ID first");
+    if (!GOOGLE_CLIENT_ID) {
+      notify("Set VITE_GOOGLE_CLIENT_ID in .env.local first");
       return;
     }
     if (!tokenClientRef.current) {
@@ -114,13 +140,63 @@ function App() {
     return response.status === 204 ? null : response.json();
   }
 
-  async function loadGmailMailbox(token = accessToken, nextFolder = folder, nextQuery = query) {
+  async function loadAttachmentSamples(message, token) {
+    const attachments = await Promise.all(message.attachments.map(async (attachment) => {
+      if (!attachment.attachmentId || attachment.size > ATTACHMENT_SAMPLE_LIMIT) return attachment;
+      try {
+        const payload = await gmailFetch(
+          token,
+          `messages/${message.id}/attachments/${attachment.attachmentId}`
+        );
+        return { ...attachment, dataBase64: payload.data || "" };
+      } catch {
+        return attachment;
+      }
+    }));
+    return { ...message, attachments };
+  }
+
+  async function loadGmailMailbox(token = accessToken, nextFolder = folder, nextQuery = query, options = {}) {
     if (!token) return;
+
+    const requestKey = `${token.slice(-12)}::${nextFolder}::${nextQuery.trim().toLowerCase()}`;
+    const existing = mailboxLoadsRef.current.get(requestKey);
+    if (existing) return existing;
+
+    const request = performGmailMailboxLoad(token, nextFolder, nextQuery, options);
+    mailboxLoadsRef.current.set(requestKey, request);
+    try {
+      return await request;
+    } finally {
+      mailboxLoadsRef.current.delete(requestKey);
+    }
+  }
+
+  async function performGmailMailboxLoad(token, nextFolder, nextQuery, { force = false } = {}) {
 
     setLoading(true);
     try {
       const profile = await gmailFetch(token, "profile");
-      setProfileEmail(profile.emailAddress || "vinisha@example.com");
+      const account = profile.emailAddress || "vinisha@example.com";
+      setProfileEmail(account);
+      activeMailboxCacheRef.current = { account, folder: nextFolder, query: nextQuery };
+
+      if (!force) {
+        let cached = null;
+        try {
+          cached = await readMailboxCache(account, nextFolder, nextQuery);
+        } catch {
+          // IndexedDB may be unavailable in private browsing; Gmail remains the fallback.
+        }
+        if (cached) {
+          setMessages(cached.messages);
+          setSelectedId((current) => cached.messages.some((message) => message.id === current) ? current : null);
+          setSelectedIds(new Set());
+          const cachedAt = new Date(cached.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          notify(`Opened ${cached.messages.length} cached messages from ${cachedAt}`);
+          return;
+        }
+      }
 
       const folderConfig = folders.find((item) => item.id === nextFolder);
       const params = new URLSearchParams({ maxResults: String(GMAIL_PAGE_SIZE) });
@@ -137,8 +213,9 @@ function App() {
         gmailMessages.push(...detail);
       }
 
-      const normalized = gmailMessages.map((item) => normalizeGmailMessage(item, nextFolder, profile.emailAddress));
+      const normalized = gmailMessages.map((item) => normalizeGmailMessage(item, nextFolder, account));
       setMessages(normalized);
+      writeMailboxCache(account, nextFolder, nextQuery, normalized).catch(() => {});
       setSelectedId((current) => normalized.some((message) => message.id === current) ? current : null);
       setSelectedIds(new Set());
       notify(`Loaded ${normalized.length} Gmail messages`);
@@ -189,10 +266,11 @@ function App() {
       for (const message of candidates.filter((item) => item.folder === "inbox")) {
         setMessages((current) => current.map((item) => item.id === message.id ? {
           ...item,
-          aiRisk: { status: "scanning", suspicious: false, confidence: 0, reason: "Ollama is checking this message." }
+          aiRisk: { status: "scanning", suspicious: false, confidence: 0, reason: "Security layers are checking this message." }
         } : item));
 
-        const result = await classifyMessageWithOllama(message);
+        const messageWithSamples = await loadAttachmentSamples(message, token);
+        const result = await classifyMessageWithFramework(messageWithSamples);
         if (result.suspicious) {
           flagged += 1;
           try {
@@ -215,7 +293,7 @@ function App() {
 
       notify(flagged ? `AI tagged ${flagged} suspicious message${flagged === 1 ? "" : "s"}` : "AI scan complete: no suspicious messages");
     } catch (error) {
-      notify(`Ollama scan failed: ${error.message.slice(0, 90)}`);
+      notify(`Multi-layer scan failed: ${error.message.slice(0, 90)}`);
     } finally {
       setAiScanning(false);
     }
@@ -223,6 +301,7 @@ function App() {
 
   function signOut(revoke = true) {
     if (revoke && accessToken) window.google?.accounts?.oauth2?.revoke(accessToken);
+    clearGoogleSession();
     setAccessToken("");
     setGmailReady(false);
     setMessages([]);
@@ -254,7 +333,7 @@ function App() {
   const mailboxMeta = loading
     ? "Loading Gmail..."
     : aiScanning
-      ? `AI scanning with ${OLLAMA_MODEL}...`
+      ? "Running multi-layer AI scan..."
     : `${visibleMessages.length} message${visibleMessages.length === 1 ? "" : "s"} from Gmail`;
 
   async function changeFolder(nextFolder) {
@@ -353,7 +432,7 @@ function App() {
     if (folderTarget === "sent") await gmailFetch(accessToken, "messages/send", { method: "POST", body: JSON.stringify({ raw }) });
     if (folderTarget === "drafts") await gmailFetch(accessToken, "drafts", { method: "POST", body: JSON.stringify({ message: { raw } }) });
     setCompose({ open: false, minimized: false, mode: "new" });
-    await loadGmailMailbox(accessToken, folder, query);
+    await loadGmailMailbox(accessToken, folder, query, { force: true });
     notify(folderTarget === "drafts" ? "Draft saved" : "Message sent");
   }
 
@@ -409,7 +488,7 @@ function App() {
             onMenu={() => setSidebarOpen(true)}
             onScan={() => analyzeSuspiciousMessages(messages, accessToken)}
             onQuery={setQuery}
-            onRefresh={() => loadGmailMailbox(accessToken, folder, query)}
+            onRefresh={() => loadGmailMailbox(accessToken, folder, query, { force: true })}
             onSearch={submitSearch}
             onSignOut={() => signOut(true)}
           />
@@ -575,7 +654,7 @@ function MessageList({ loading, mailboxMeta, mailboxTitle, messages, selectedId,
                 <span className="row-flags">
                   {message.aiRisk?.status === "scanning" && <span className="ai-chip">AI checking</span>}
                   {message.aiRisk?.status === "done" && message.aiRisk.suspicious && <span className="ai-chip danger">Risk {Math.round(message.aiRisk.confidence * 100)}%</span>}
-                  {message.attachments.length ? "Attachment" : ""}
+                  {message.attachments.length ? `${message.attachments.length} attachment${message.attachments.length === 1 ? "" : "s"}` : ""}
                 </span>
               </div>
             </button>
@@ -604,7 +683,23 @@ function ReadingPane({ message, onAction, onQuickReply }) {
               {message.aiRisk && (
                 <div className={`ai-risk ${message.aiRisk.suspicious ? "danger" : ""}`}>
                   <strong>{message.aiRisk.status === "scanning" ? "AI checking" : message.aiRisk.suspicious ? "Suspicious mail" : "AI check passed"}</strong>
-                  {message.aiRisk.status === "done" && <span>{Math.round(message.aiRisk.confidence * 100)}% confidence. {message.aiRisk.reason}</span>}
+                  {message.aiRisk.status === "done" && (
+                    <>
+                      <span>
+                        Category: {titleCase(message.aiRisk.category || "safe")} · Risk {Math.round(message.aiRisk.riskScore * 100)}% · {message.aiRisk.reason}
+                      </span>
+                      <div className="layer-results">
+                        {Object.entries(message.aiRisk.layers || {}).map(([name, layer]) => (
+                          <span className={`layer-chip ${layer.score >= 0.48 ? "danger" : ""}`} key={name} title={(layer.findings || []).join("; ")}>
+                            {titleCase(name.replaceAll("_", " "))}: {Math.round(layer.score * 100)}%
+                          </span>
+                        ))}
+                      </div>
+                      {message.aiRisk.indicators?.length > 0 && (
+                        <span>Indicators: {message.aiRisk.indicators.slice(0, 3).join("; ")}</span>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -615,7 +710,7 @@ function ReadingPane({ message, onAction, onQuickReply }) {
             </div>
           </div>
           <div className="message-body">{message.body}</div>
-          {message.attachments.length > 0 && <p className="chip">Attachment: {message.attachments.join(", ")}</p>}
+          {message.attachments.length > 0 && <p className="chip">Attachment: {message.attachments.map((item) => item.name).join(", ")}</p>}
           <form className="quick-reply" onSubmit={onQuickReply}>
             <textarea name="body" placeholder={`Quick reply to ${message.from}`}></textarea>
             <button className="send-button" type="submit">Send reply</button>
@@ -663,64 +758,43 @@ function Toast({ text }) {
   return <div className={`toast ${text ? "show" : ""}`} role="status" aria-live="polite">{text}</div>;
 }
 
-async function classifyMessageWithOllama(message) {
-  const prompt = [
-    "You are an email security classifier.",
-    "Classify whether this incoming email is suspicious, phishing, scam, malware, credential theft, payment fraud, impersonation, or unsafe.",
-    "Return only strict JSON with keys: suspicious boolean, confidence number from 0 to 1, reason string under 140 characters.",
-    "",
-    `From: ${message.from} <${message.email}>`,
-    `To: ${message.to}`,
-    `Subject: ${message.subject}`,
-    `Attachments: ${message.attachments.join(", ") || "None"}`,
-    "Body:",
-    message.body.slice(0, 3000)
-  ].join("\n");
-
-  const response = await fetch("/ollama/api/generate", {
+async function classifyMessageWithFramework(message) {
+  const response = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      prompt,
-      stream: false,
-      format: {
-        type: "object",
-        properties: {
-          suspicious: { type: "boolean" },
-          confidence: { type: "number" },
-          reason: { type: "string" }
-        },
-        required: ["suspicious", "confidence", "reason"]
-      },
-      options: {
-        temperature: 0,
-        num_predict: 160
-      }
+      message_id: message.id,
+      sender_name: message.from,
+      sender_email: message.email,
+      recipient: message.to,
+      subject: message.subject,
+      body: message.body.slice(0, 12000),
+      headers: message.headers,
+      attachments: message.attachments.map((item) => ({
+        name: item.name,
+        mime_type: item.mimeType,
+        size: item.size,
+        data_base64: item.dataBase64 || null
+      }))
     })
   });
 
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail || `Ollama request failed: ${response.status}`);
+    throw new Error(detail || `Analysis API failed: ${response.status}`);
   }
 
-  const data = await response.json();
-  const parsed = parseOllamaJson(data.response || "{}");
+  const result = await response.json();
   return {
-    suspicious: Boolean(parsed.suspicious),
-    confidence: clamp(Number(parsed.confidence) || 0, 0, 1),
-    reason: String(parsed.reason || "No reason returned.").slice(0, 180)
+    suspicious: Boolean(result.suspicious),
+    category: result.category,
+    confidence: clamp(Number(result.confidence) || 0, 0, 1),
+    riskScore: clamp(Number(result.risk_score) || 0, 0, 1),
+    reason: String(result.reason || "No reason returned.").slice(0, 220),
+    indicators: result.indicators || [],
+    layers: result.layers || {},
+    modelScores: result.model_scores || {}
   };
-}
-
-function parseOllamaJson(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    const match = value.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : {};
-  }
 }
 
 function mergeLabels(existing, additions) {
@@ -730,6 +804,11 @@ function mergeLabels(existing, additions) {
 function normalizeGmailMessage(raw, folder, fallbackEmail) {
   const headers = raw.payload?.headers || [];
   const header = (name) => headers.find((item) => item.name.toLowerCase() === name.toLowerCase())?.value || "";
+  const headerMap = headers.reduce((result, item) => {
+    const name = item.name.toLowerCase();
+    result[name] = result[name] ? `${result[name]}\n${item.value}` : item.value;
+    return result;
+  }, {});
   const from = parseAddress(header("From"));
   const labelIds = raw.labelIds || [];
   return {
@@ -745,7 +824,8 @@ function normalizeGmailMessage(raw, folder, fallbackEmail) {
     unread: labelIds.includes("UNREAD"),
     starred: labelIds.includes("STARRED"),
     labels: visibleGmailLabels(labelIds),
-    attachments: collectAttachments(raw.payload)
+    attachments: collectAttachments(raw.payload),
+    headers: headerMap
   };
 }
 
@@ -780,7 +860,15 @@ function extractBody(part) {
 
 function collectAttachments(part, attachments = []) {
   if (!part) return attachments;
-  if (part.filename) attachments.push(part.filename);
+  if (part.filename) {
+    attachments.push({
+      name: part.filename,
+      mimeType: part.mimeType || "application/octet-stream",
+      size: Number(part.body?.size || 0),
+      attachmentId: part.body?.attachmentId || "",
+      dataBase64: part.body?.data || ""
+    });
+  }
   (part.parts || []).forEach((child) => collectAttachments(child, attachments));
   return attachments;
 }
@@ -795,6 +883,10 @@ function decodeBase64Url(value) {
 function stripHtml(value) {
   const node = document.createElement("div");
   node.innerHTML = value;
+  node.querySelectorAll("a[href]").forEach((anchor) => {
+    const href = anchor.getAttribute("href");
+    if (href && !anchor.textContent.includes(href)) anchor.append(` (${href})`);
+  });
   return node.textContent || node.innerText || "";
 }
 
@@ -831,6 +923,43 @@ function labelDotClass(label) {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function saveGoogleSession(response) {
+  if (!response?.access_token) return;
+  const expiresInSeconds = Math.max(60, Number(response.expires_in) || 3600);
+  const session = {
+    accessToken: response.access_token,
+    clientId: GOOGLE_CLIENT_ID,
+    expiresAt: Date.now() + expiresInSeconds * 1000 - SESSION_EXPIRY_MARGIN_MS
+  };
+  try {
+    window.sessionStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify(session));
+  } catch {
+    // Storage can be unavailable in restrictive/private browsing modes.
+  }
+}
+
+function readGoogleSession() {
+  try {
+    const session = JSON.parse(window.sessionStorage.getItem(GOOGLE_SESSION_KEY) || "null");
+    const valid = session?.accessToken
+      && session.clientId === GOOGLE_CLIENT_ID
+      && Number(session.expiresAt) > Date.now();
+    if (valid) return session;
+  } catch {
+    // Invalid session data is removed below.
+  }
+  clearGoogleSession();
+  return null;
+}
+
+function clearGoogleSession() {
+  try {
+    window.sessionStorage.removeItem(GOOGLE_SESSION_KEY);
+  } catch {
+    // There is nothing else to clear when browser storage is unavailable.
+  }
 }
 
 createRoot(document.querySelector("#root")).render(

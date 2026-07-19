@@ -534,6 +534,28 @@ button {
   line-height: 1.45;
 }
 
+.layer-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.layer-results .layer-chip {
+  display: inline-flex;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #dcecef;
+  color: #245467;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.layer-results .layer-chip.danger {
+  background: #f7cec6;
+  color: #8b2718;
+}
+
 .read-actions {
   display: flex;
   flex-wrap: wrap;

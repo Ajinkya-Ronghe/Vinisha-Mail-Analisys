@@ -1,0 +1,44 @@
+subject,body,label
+Weekly project update,The team completed the planned tasks and the review meeting remains scheduled for Monday,safe
+Lunch confirmation,Thank you for the invitation. I will meet you at the cafe at one pm,safe
+Your monthly statement,Your regular account statement is available through the official mobile application,safe
+Meeting minutes,Attached are the approved minutes from yesterday's internal planning meeting,safe
+Holiday schedule,The office holiday calendar has been updated on the employee portal,safe
+Code review complete,I reviewed the changes and left two minor comments in the repository,safe
+Travel booking confirmed,Your requested business flight and hotel reservation have been confirmed,safe
+Invoice paid,This is confirmation that invoice 1042 was paid through our normal supplier process,safe
+Class timetable,The revised timetable for next semester is available on the university website,safe
+Welcome to the team,Your induction session begins Tuesday and your manager will meet you at reception,safe
+Appointment reminder,This is a reminder for the appointment you scheduled for Friday afternoon,safe
+Document feedback,The draft looks good. Please correct the final paragraph before submission,safe
+Unusual account activity,We noticed unusual activity. Contact the security team through the official support channel,threat
+Confidential request,Do not tell anyone about this request and respond only to this private address,threat
+Immediate action demanded,ACT NOW or your access will be permanently blocked today,threat
+Gift card request,I am in a meeting. Purchase gift cards immediately and send the codes to me,threat
+Change bank details,Use this new bank account for all future supplier payments without calling us,threat
+Legal warning,Final warning. Pay the confidential settlement immediately to avoid arrest,threat
+Executive impersonation,I am the chief executive and need a secret wire transfer completed now,threat
+Lottery winner,You have won an unexpected prize and must pay a processing fee to receive it,threat
+Security alert response needed,Reply with your one-time password so the technician can secure your account,threat
+Payroll diversion,Update my salary payment account urgently before the payroll run,threat
+Verify your mailbox,Your mailbox is full. Sign in at http://mail-login.example/verify to keep access,phishing
+Password expires today,Confirm your password immediately using http://192.0.2.10/login,phishing
+Account suspended,Click the shortened link to verify your identity and restore your account,phishing
+Payment portal update,Open the supplied link and enter your bank login to view the unpaid invoice,phishing
+Shared document,Sign in with your company credentials to open the protected document,phishing
+Tax refund available,Submit your identity and card details through this link to receive a tax refund,phishing
+Cloud storage warning,Your files will be deleted unless you confirm your login information today,phishing
+Delivery failed,Pay a small redelivery fee and verify your card through the tracking link,phishing
+University access blocked,Students must validate their email password at the external portal immediately,phishing
+Multi factor reset,Send your verification code through this form to cancel an unauthorized login,phishing
+Updated invoice attached,Enable macros in the attached invoice document to view the payment details,malware
+Voice message,Open the attached executable to listen to the secure voice recording,malware
+Shipping documents,Extract the archive and run the included document viewer to see the shipment,malware
+Security patch,Disable antivirus and execute the attached update to protect your computer,malware
+Scanned receipt,The attached PDF is actually an executable file. Open it to see the receipt,malware
+Resume application,Run the attached script to decrypt and view the applicant resume,malware
+Protected spreadsheet,Enable content and macros in the spreadsheet to calculate the figures,malware
+Browser update required,Install the attached program immediately to continue accessing the website,malware
+Encrypted files,Run this recovery tool and send cryptocurrency to restore access to your documents,malware
+Photo archive,Open the password protected archive and execute the image viewer inside,malware
+
