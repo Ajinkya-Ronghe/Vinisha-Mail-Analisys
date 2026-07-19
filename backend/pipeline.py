@@ -6,6 +6,16 @@ from .ollama_client import analyze_semantics
 from .schemas import AnalysisResponse, EmailInput, LayerResult
 from .security_layers import attachment_layer, language_indicators, metadata_layer, url_layer
 
+LAYER_WEIGHTS = {
+    "semantic_ai": 0.30,
+    "machine_learning": 0.30,
+    "metadata": 0.13,
+    "urls": 0.10,
+    "attachments": 0.12,
+    "anomaly_detection": 0.05,
+}
+RISK_THRESHOLD = 0.48
+
 
 class AnalysisPipeline:
     def __init__(self):
@@ -47,17 +57,17 @@ class AnalysisPipeline:
 
         # Each independent layer contributes to a transparent soft-voting decision.
         risk_score = (
-            0.30 * semantic.score
-            + 0.30 * ml.score
-            + 0.13 * metadata.score
-            + 0.10 * urls.score
-            + 0.12 * attachments.score
-            + 0.05 * anomaly.score
+            LAYER_WEIGHTS["semantic_ai"] * semantic.score
+            + LAYER_WEIGHTS["machine_learning"] * ml.score
+            + LAYER_WEIGHTS["metadata"] * metadata.score
+            + LAYER_WEIGHTS["urls"] * urls.score
+            + LAYER_WEIGHTS["attachments"] * attachments.score
+            + LAYER_WEIGHTS["anomaly_detection"] * anomaly.score
         )
         risk_score = max(0.0, min(1.0, risk_score))
         corroborated_ml_risk = ml.score >= 0.75 and max(metadata.score, urls.score, language.score) >= 0.25
         suspicious = (
-            risk_score >= 0.48
+            risk_score >= RISK_THRESHOLD
             or attachments.score >= 0.55
             or metadata.score >= 0.70
             or corroborated_ml_risk

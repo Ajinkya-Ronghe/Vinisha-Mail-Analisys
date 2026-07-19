@@ -2,6 +2,8 @@
 
 MailDesk is a research prototype that connects to Gmail and analyses incoming messages with a Python multi-layer security pipeline. The React interface displays the final category, risk score, explanation, layer scores, and Gmail `AI Suspicious` label.
 
+The application now includes a **Research results** view in the left app rail. It supports manual four-class ground-truth labels, live confusion matrices, accuracy, per-class precision/recall/F1, model and rule-baseline comparisons, anomaly counts and a timestamped JSON evidence export.
+
 ## Implemented security layers
 
 1. Metadata validation: sender, Reply-To, Return-Path, Message-ID, SPF, DKIM and DMARC indicators.
@@ -82,6 +84,9 @@ npm run dev:web
 3. Create a Web Application OAuth client.
 4. Add `http://localhost:8000` and `http://127.0.0.1:8000` as authorized JavaScript origins as required.
 5. Ensure the consent screen permits these scopes:
+   - `openid`
+   - `email`
+   - `profile`
    - `https://www.googleapis.com/auth/gmail.modify`
    - `https://www.googleapis.com/auth/gmail.send`
    - `https://www.googleapis.com/auth/gmail.compose`
@@ -105,6 +110,24 @@ After changing scopes, revoke the application's existing Google access and sign 
 ```
 
 Evaluation output is saved to `reports/bootstrap_evaluation.json` and includes accuracy, per-class precision, recall, F1 scores, confusion matrices, a conventional rule-based baseline, each ML model, and the soft-voting ensemble.
+
+The API also exposes:
+
+- `GET /framework` for auditable models, layers, weights, threshold and limitations;
+- `GET /evaluation` for the saved bootstrap report.
+
+To create live mailbox metrics, analyse controlled test messages, open each message and set **Research ground truth**. Then open **Research results** from the left app rail. The label is cached with that account's mailbox data. Exported JSON can contain message identifiers, sender addresses and subjects; anonymise it before sharing or publication.
+
+## Proposal-aligned documentation
+
+Start with [`docs/README.md`](docs/README.md). It links the detailed:
+
+- requirement and objective traceability assessment;
+- architecture and implementation specification;
+- research methodology and experiment protocol;
+- safe software/research test plan;
+- thesis rubric and chapter-writing guide;
+- viva and live-demonstration guide.
 
 ## Research limitation
 

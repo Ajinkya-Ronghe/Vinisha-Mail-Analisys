@@ -5,6 +5,9 @@ import { readMailboxCache, writeMailboxCache } from "./mailboxCache.js";
 
 const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || "").trim();
 const GMAIL_SCOPES = [
+  "openid",
+  "email",
+  "profile",
   "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/gmail.compose",
@@ -43,6 +46,9 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [aiScanning, setAiScanning] = useState(false);
   const [profileEmail, setProfileEmail] = useState("vinisha@example.com");
+  const [userProfile, setUserProfile] = useState({ name: "", email: "", picture: "" });
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [activeView, setActiveView] = useState("mail");
   const [toast, setToast] = useState("");
   const [compose, setCompose] = useState({ open: false, minimized: false, mode: "new" });
   const [composeForm, setComposeForm] = useState({ to: "", subject: "", body: "" });
@@ -52,6 +58,8 @@ function App() {
   const mailboxLoadsRef = useRef(new Map());
   const activeMailboxCacheRef = useRef(null);
   const sessionRestoreAttemptedRef = useRef(false);
+  const profileLoadedForRef = useRef("");
+  const profileMenuRef = useRef(null);
 
   function notify(text) {
     setToast(text);
@@ -105,6 +113,21 @@ function App() {
     });
   }, [messages, loading, aiScanning, gmailReady]);
 
+  useEffect(() => {
+    if (!profileMenuOpen) return undefined;
+    function closeProfileMenu(event) {
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      if (event.type === "mousedown" && profileMenuRef.current?.contains(event.target)) return;
+      setProfileMenuOpen(false);
+    }
+    document.addEventListener("mousedown", closeProfileMenu);
+    document.addEventListener("keydown", closeProfileMenu);
+    return () => {
+      document.removeEventListener("mousedown", closeProfileMenu);
+      document.removeEventListener("keydown", closeProfileMenu);
+    };
+  }, [profileMenuOpen]);
+
   async function requestGoogleLogin() {
     if (!GOOGLE_CLIENT_ID) {
       notify("Set VITE_GOOGLE_CLIENT_ID in .env.local first");
@@ -138,6 +161,30 @@ function App() {
     }
 
     return response.status === 204 ? null : response.json();
+  }
+
+  async function loadGoogleUserProfile(token, fallbackEmail) {
+    if (profileLoadedForRef.current === fallbackEmail) return;
+    profileLoadedForRef.current = fallbackEmail;
+    const fallback = {
+      name: displayNameFromEmail(fallbackEmail),
+      email: fallbackEmail,
+      picture: ""
+    };
+    try {
+      const response = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!response.ok) throw new Error("Google profile unavailable");
+      const profile = await response.json();
+      setUserProfile({
+        name: profile.name || fallback.name,
+        email: profile.email || fallback.email,
+        picture: profile.picture || ""
+      });
+    } catch {
+      setUserProfile(fallback);
+    }
   }
 
   async function loadAttachmentSamples(message, token) {
@@ -179,6 +226,7 @@ function App() {
       const profile = await gmailFetch(token, "profile");
       const account = profile.emailAddress || "vinisha@example.com";
       setProfileEmail(account);
+      loadGoogleUserProfile(token, account);
       activeMailboxCacheRef.current = { account, folder: nextFolder, query: nextQuery };
 
       if (!force) {
@@ -305,10 +353,26 @@ function App() {
     setAccessToken("");
     setGmailReady(false);
     setMessages([]);
+    setUserProfile({ name: "", email: "", picture: "" });
+    setProfileMenuOpen(false);
+    profileLoadedForRef.current = "";
     setSelectedId(null);
     setSelectedIds(new Set());
     setCompose({ open: false, minimized: false, mode: "new" });
     notify("Signed out");
+  }
+
+  function switchGoogleAccount() {
+    clearGoogleSession();
+    setProfileMenuOpen(false);
+    setAccessToken("");
+    setGmailReady(false);
+    setMessages([]);
+    setSelectedId(null);
+    setSelectedIds(new Set());
+    setUserProfile({ name: "", email: "", picture: "" });
+    profileLoadedForRef.current = "";
+    setTimeout(() => tokenClientRef.current?.requestAccessToken({ prompt: "select_account" }), 0);
   }
 
   const visibleMessages = useMemo(() => {
@@ -337,6 +401,7 @@ function App() {
     : `${visibleMessages.length} message${visibleMessages.length === 1 ? "" : "s"} from Gmail`;
 
   async function changeFolder(nextFolder) {
+    setActiveView("mail");
     setFolder(nextFolder);
     setSelectedId(null);
     setSelectedIds(new Set());
@@ -346,6 +411,7 @@ function App() {
 
   async function submitSearch(event) {
     event.preventDefault();
+    setActiveView("mail");
     setSelectedIds(new Set());
     await loadGmailMailbox(accessToken, folder, query);
   }
@@ -412,6 +478,13 @@ function App() {
     });
   }
 
+  function setMessageGroundTruth(id, groundTruth) {
+    setMessages((current) => current.map((message) => (
+      message.id === id ? { ...message, groundTruth: groundTruth || "" } : message
+    )));
+    notify(groundTruth ? `Ground truth saved as ${titleCase(groundTruth)}` : "Ground truth removed");
+  }
+
   function openCompose(mode = "new", source) {
     const nextForm = { to: "", subject: "", body: "" };
     if (mode === "reply" && source) {
@@ -471,58 +544,73 @@ function App() {
   return (
     <>
       <div className="app-shell">
+        <Topbar
+          profile={userProfile.email ? userProfile : { name: displayNameFromEmail(profileEmail), email: profileEmail, picture: "" }}
+          profileMenuOpen={profileMenuOpen}
+          profileMenuRef={profileMenuRef}
+          query={query}
+          onMenu={() => setSidebarOpen(true)}
+          onProfileToggle={() => setProfileMenuOpen((current) => !current)}
+          onQuery={setQuery}
+          onSearch={submitSearch}
+          onSignOut={() => signOut(true)}
+          onSwitchAccount={switchGoogleAccount}
+        />
+        <AppRail activeView={activeView} onCompose={() => openCompose()} onView={setActiveView} />
         <Sidebar
           counts={counts}
           folder={folder}
           label={label}
           open={sidebarOpen}
-          profileEmail={profileEmail}
           onCompose={() => openCompose()}
           onFolder={changeFolder}
           onLabel={setLabel}
         />
         <main className="main-panel">
-          <Topbar
-            aiScanning={aiScanning}
-            query={query}
-            onMenu={() => setSidebarOpen(true)}
-            onScan={() => analyzeSuspiciousMessages(messages, accessToken)}
-            onQuery={setQuery}
-            onRefresh={() => loadGmailMailbox(accessToken, folder, query, { force: true })}
-            onSearch={submitSearch}
-            onSignOut={() => signOut(true)}
-          />
-          <section className="mail-workspace" aria-label="Mail workspace">
-            <MessageList
-              loading={loading}
-              mailboxMeta={mailboxMeta}
-              mailboxTitle={mailboxTitle}
-              messages={visibleMessages}
-              selectedId={selectedId}
-              selectedIds={selectedIds}
-              sort={sort}
-              onBulk={bulkAction}
-              onOpen={openMessage}
-              onSelect={toggleSelected}
-              onSelectAll={(checked) => setSelectedIds(checked ? new Set(visibleMessages.map((message) => message.id)) : new Set())}
-              onSort={setSort}
-              onStar={toggleStar}
-            />
-            <ReadingPane
-              message={selectedMessage}
-              onAction={async (action) => {
-                if (!selectedMessage) return;
-                if (action === "close") setSelectedId(null);
-                if (action === "reply") openCompose("reply", selectedMessage);
-                if (action === "forward") openCompose("forward", selectedMessage);
-                if (action === "archive") await moveMessage(selectedMessage.id, "archive");
-                if (action === "delete") await moveMessage(selectedMessage.id, "trash");
-                if (action === "spam") await moveMessage(selectedMessage.id, "spam");
-                if (action === "label") notify("Custom Gmail label creation is not wired in this prototype");
-              }}
-              onQuickReply={sendQuickReply}
-            />
-          </section>
+          {activeView === "mail" ? (
+            <>
+              <CommandBar
+                aiScanning={aiScanning}
+                onScan={() => analyzeSuspiciousMessages(messages, accessToken)}
+                onRefresh={() => loadGmailMailbox(accessToken, folder, query, { force: true })}
+                onCompose={() => openCompose()}
+              />
+              <section className="mail-workspace" aria-label="Mail workspace">
+                <MessageList
+                  loading={loading}
+                  mailboxMeta={mailboxMeta}
+                  mailboxTitle={mailboxTitle}
+                  messages={visibleMessages}
+                  selectedId={selectedId}
+                  selectedIds={selectedIds}
+                  sort={sort}
+                  onBulk={bulkAction}
+                  onOpen={openMessage}
+                  onSelect={toggleSelected}
+                  onSelectAll={(checked) => setSelectedIds(checked ? new Set(visibleMessages.map((message) => message.id)) : new Set())}
+                  onSort={setSort}
+                  onStar={toggleStar}
+                />
+                <ReadingPane
+                  message={selectedMessage}
+                  onGroundTruth={setMessageGroundTruth}
+                  onAction={async (action) => {
+                    if (!selectedMessage) return;
+                    if (action === "close") setSelectedId(null);
+                    if (action === "reply") openCompose("reply", selectedMessage);
+                    if (action === "forward") openCompose("forward", selectedMessage);
+                    if (action === "archive") await moveMessage(selectedMessage.id, "archive");
+                    if (action === "delete") await moveMessage(selectedMessage.id, "trash");
+                    if (action === "spam") await moveMessage(selectedMessage.id, "spam");
+                    if (action === "label") notify("Custom Gmail label creation is not wired in this prototype");
+                  }}
+                  onQuickReply={sendQuickReply}
+                />
+              </section>
+            </>
+          ) : (
+            <ResearchDashboard messages={messages} onBackToMail={() => setActiveView("mail")} />
+          )}
         </main>
       </div>
       <div className={`overlay ${sidebarOpen ? "open" : ""}`} onClick={() => setSidebarOpen(false)} />
@@ -556,24 +644,46 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function Sidebar({ counts, folder, label, open, profileEmail, onCompose, onFolder, onLabel }) {
+function AppRail({ activeView, onCompose, onView }) {
+  const apps = [
+    ["mail", "✉", "Mail"],
+    ["research", "▥", "Research results"]
+  ];
+  return (
+    <nav className="app-rail" aria-label="Applications">
+      {apps.map(([id, glyph, name]) => (
+        <button className={`rail-button ${activeView === id ? "active" : ""}`} key={id} type="button" title={name} aria-current={activeView === id ? "page" : undefined} onClick={() => onView(id)}>
+          <span aria-hidden="true">{glyph}</span>
+          <span className="sr-only">{name}</span>
+        </button>
+      ))}
+      <div className="rail-spacer" />
+      <button className="rail-button rail-compose" type="button" title="New mail" onClick={onCompose}>+</button>
+    </nav>
+  );
+}
+
+function Sidebar({ counts, folder, label, open, onCompose, onFolder, onLabel }) {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`} aria-label="Mail folders">
-      <div className="brand">
-        <div className="brand-mark" aria-hidden="true">M</div>
-        <div>
-          <strong>MailDesk</strong>
-          <span>{profileEmail}</span>
-        </div>
+      <div className="folder-pane-heading">
+        <strong>Mail</strong>
+        <button className="pane-more" type="button" aria-label="Folder options">•••</button>
       </div>
       <button className="compose-primary" type="button" onClick={onCompose}>
-        <span aria-hidden="true">+</span>
-        Compose
+        <span className="new-mail-icon" aria-hidden="true">＋</span>
+        New mail
       </button>
+      <div className="folder-group-title"><span aria-hidden="true">⌄</span> Favorites</div>
+      <button className={`folder-button ${folder === "inbox" ? "active" : ""}`} type="button" onClick={() => onFolder("inbox")}>
+        <span className="folder-left"><span className="folder-glyph" aria-hidden="true">▣</span>Inbox</span>
+        <span className="folder-count">{counts.inbox}</span>
+      </button>
+      <div className="folder-group-title"><span aria-hidden="true">⌄</span> Folders</div>
       <nav className="folder-list" aria-label="Folders">
         {folders.map((item) => (
           <button className={`folder-button ${folder === item.id ? "active" : ""}`} key={item.id} type="button" onClick={() => onFolder(item.id)}>
-            <span className="folder-left">{item.name}</span>
+            <span className="folder-left"><span className="folder-glyph" aria-hidden="true">{folderGlyph(item.id)}</span>{item.name}</span>
             <span className="folder-count">{counts[item.id]}</span>
           </button>
         ))}
@@ -591,21 +701,247 @@ function Sidebar({ counts, folder, label, open, profileEmail, onCompose, onFolde
   );
 }
 
-function Topbar({ aiScanning, query, onMenu, onQuery, onRefresh, onScan, onSearch, onSignOut }) {
+function Topbar({ profile, profileMenuOpen, profileMenuRef, query, onMenu, onProfileToggle, onQuery, onSearch, onSignOut, onSwitchAccount }) {
   return (
     <header className="topbar">
-      <button className="icon-button mobile-menu" type="button" aria-label="Open folders" onClick={onMenu}>Menu</button>
+      <div className="topbar-brand">
+        <button className="app-launcher" type="button" aria-label="App launcher">
+          {Array.from({ length: 9 }, (_, index) => <span key={index} />)}
+        </button>
+        <button className="mobile-menu" type="button" aria-label="Open folders" onClick={onMenu}>☰</button>
+        <span className="outlook-mark" aria-hidden="true">M</span>
+        <strong>MailDesk</strong>
+      </div>
       <form className="search-box" role="search" onSubmit={onSearch}>
-        <input type="search" placeholder="Search mail, people, subject, labels" value={query} onChange={(event) => onQuery(event.target.value)} />
-        <button className="icon-button" type="submit" aria-label="Search">Go</button>
+        <span className="search-glyph" aria-hidden="true">⌕</span>
+        <input type="search" placeholder="Search" value={query} onChange={(event) => onQuery(event.target.value)} />
+        <button className="search-submit" type="submit" aria-label="Search">→</button>
       </form>
       <div className="account-actions">
-        <button className="icon-button" type="button" onClick={onScan} disabled={aiScanning}>{aiScanning ? "Scanning" : "AI scan"}</button>
-        <button className="icon-button" type="button" onClick={onSignOut}>Sign out</button>
-        <button className="icon-button" type="button" onClick={onRefresh}>Refresh</button>
-        <button className="profile-button" type="button" aria-label="Account">V</button>
+        <button className="topbar-icon" type="button" aria-label="Settings" title="Settings">⚙</button>
+        <button className="topbar-icon" type="button" aria-label="Help" title="Help">?</button>
+        <div className="profile-menu-wrapper" ref={profileMenuRef}>
+          <button className="profile-button" type="button" aria-label="Account manager" aria-expanded={profileMenuOpen} onClick={onProfileToggle}>
+            {profile.picture ? <img src={profile.picture} alt="" referrerPolicy="no-referrer" /> : profileInitials(profile.name || profile.email)}
+            <span className="presence-dot" aria-hidden="true" />
+          </button>
+          {profileMenuOpen && (
+            <section className="profile-menu" aria-label="Account options">
+              <div className="profile-menu-header">
+                <div className="profile-avatar-large">
+                  {profile.picture ? <img src={profile.picture} alt="" referrerPolicy="no-referrer" /> : profileInitials(profile.name || profile.email)}
+                </div>
+                <div>
+                  <strong>{profile.name || displayNameFromEmail(profile.email)}</strong>
+                  <span>{profile.email}</span>
+                  <small>Google account · Connected</small>
+                </div>
+              </div>
+              <a className="account-link" href="https://myaccount.google.com/" target="_blank" rel="noreferrer">View account</a>
+              <div className="profile-menu-actions">
+                <button type="button" onClick={onSwitchAccount}><span aria-hidden="true">⇄</span> Switch account</button>
+                <button type="button" onClick={onSignOut}><span aria-hidden="true">↪</span> Sign out</button>
+              </div>
+            </section>
+          )}
+        </div>
       </div>
     </header>
+  );
+}
+
+function CommandBar({ aiScanning, onCompose, onRefresh, onScan }) {
+  return (
+    <div className="command-bar" aria-label="Mail commands">
+      <button className="command-primary" type="button" onClick={onCompose}><span aria-hidden="true">＋</span> New mail</button>
+      <span className="command-divider" />
+      <button className="command-button" type="button" onClick={onRefresh}><span aria-hidden="true">↻</span> Refresh</button>
+      <button className="command-button ai-command" type="button" onClick={onScan} disabled={aiScanning}>
+        <span aria-hidden="true">✦</span> {aiScanning ? "Scanning…" : "AI scan"}
+      </button>
+      <span className="command-divider" />
+      <button className="command-button" type="button"><span aria-hidden="true">⋯</span> More</button>
+    </div>
+  );
+}
+
+function ResearchDashboard({ messages, onBackToMail }) {
+  const [evaluation, setEvaluation] = useState(null);
+  const [evaluationError, setEvaluationError] = useState("");
+  const analyzed = useMemo(
+    () => messages.filter((message) => message.aiRisk?.status === "done"),
+    [messages]
+  );
+  const summary = useMemo(() => {
+    const result = { safe: 0, threat: 0, phishing: 0, malware: 0 };
+    analyzed.forEach((message) => {
+      const category = message.aiRisk?.category || "safe";
+      if (category in result) result[category] += 1;
+    });
+    return result;
+  }, [analyzed]);
+  const mailboxMetrics = useMemo(() => calculateMailboxMetrics(messages), [messages]);
+  const anomalyCount = analyzed.filter((message) => (
+    Number(message.aiRisk?.layers?.anomaly_detection?.score || 0) >= 0.55
+  )).length;
+  const averageRisk = analyzed.length
+    ? analyzed.reduce((total, message) => total + Number(message.aiRisk.riskScore || 0), 0) / analyzed.length
+    : 0;
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/evaluation")
+      .then((response) => {
+        if (!response.ok) throw new Error("Run the Python evaluation command to create the report.");
+        return response.json();
+      })
+      .then((result) => active && setEvaluation(result))
+      .catch((error) => active && setEvaluationError(error.message));
+    return () => { active = false; };
+  }, []);
+
+  const bootstrapModels = Object.entries(evaluation?.models || {});
+  const ensemble = evaluation?.models?.soft_voting_ensemble;
+
+  return (
+    <section className="research-dashboard" aria-label="Research results dashboard">
+      <header className="research-header">
+        <div>
+          <span className="research-eyebrow">PhD implementation evidence</span>
+          <h1>Multi-layer defense evaluation</h1>
+          <p>Mailbox observations, ground-truth validation, baseline comparisons and model-level results.</p>
+        </div>
+        <div className="research-actions">
+          <button className="secondary-button" type="button" onClick={onBackToMail}>Back to mail</button>
+          <button className="command-primary" type="button" onClick={() => exportExperimentResults(messages)}>Export results</button>
+        </div>
+      </header>
+
+      <div className="research-warning">
+        <strong>Research validity notice</strong>
+        <span>Bootstrap figures verify the software pipeline only. Thesis claims require independent real, synthetic, temporal and unseen test datasets.</span>
+      </div>
+
+      <div className="metric-cards">
+        <MetricCard label="Messages analysed" value={analyzed.length} detail={`${messages.length - analyzed.length} awaiting analysis`} />
+        <MetricCard label="Average risk" value={formatPercent(averageRisk)} detail="Weighted ensemble score" />
+        <MetricCard label="Flagged suspicious" value={analyzed.filter((message) => message.aiRisk.suspicious).length} detail="Above decision threshold" />
+        <MetricCard label="Anomaly indicators" value={anomalyCount} detail="Zero-day proxy; not proof" />
+        <MetricCard label="Ground-truth labels" value={mailboxMetrics.sampleCount} detail="Manually validated emails" />
+        <MetricCard label="Mailbox accuracy" value={mailboxMetrics.sampleCount ? formatPercent(mailboxMetrics.accuracy) : "—"} detail="Requires ground-truth labels" />
+      </div>
+
+      <div className="research-grid">
+        <article className="research-panel category-panel">
+          <div className="panel-title">
+            <div><span>Current mailbox</span><h2>Predicted categories</h2></div>
+            <small>{analyzed.length} classified</small>
+          </div>
+          <div className="category-bars">
+            {Object.entries(summary).map(([category, count]) => (
+              <div className="category-row" key={category}>
+                <span>{titleCase(category)}</span>
+                <div className="category-track"><i className={`category-fill category-${category}`} style={{ width: `${analyzed.length ? (count / analyzed.length) * 100 : 0}%` }} /></div>
+                <strong>{count}</strong>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <article className="research-panel">
+          <div className="panel-title">
+            <div><span>Live labelled sample</span><h2>Mailbox confusion matrix</h2></div>
+            <small>{mailboxMetrics.sampleCount} samples</small>
+          </div>
+          {mailboxMetrics.sampleCount ? (
+            <ConfusionMatrix matrix={mailboxMetrics.matrix} labels={mailboxMetrics.labels} />
+          ) : (
+            <ResearchEmpty text="Open test emails and assign a Research ground truth label to calculate live metrics." />
+          )}
+        </article>
+
+        <article className="research-panel model-comparison">
+          <div className="panel-title">
+            <div><span>Bootstrap hold-out</span><h2>Model comparison</h2></div>
+            <small>{evaluation ? `${evaluation.test_samples} test samples` : "Loading"}</small>
+          </div>
+          {evaluationError && <ResearchEmpty text={evaluationError} />}
+          {!evaluationError && !evaluation && <ResearchEmpty text="Loading evaluation report…" />}
+          {bootstrapModels.length > 0 && (
+            <div className="model-table" role="table" aria-label="Model accuracy comparison">
+              <div className="model-table-row model-table-head" role="row"><span>Model</span><span>Accuracy</span><span>Macro F1</span></div>
+              {bootstrapModels.map(([name, result]) => (
+                <div className="model-table-row" role="row" key={name}>
+                  <strong>{modelDisplayName(name)}</strong>
+                  <span>{formatPercent(result.accuracy)}</span>
+                  <span>{result.classification_report?.["macro avg"] ? formatPercent(result.classification_report["macro avg"]["f1-score"]) : "Binary baseline"}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </article>
+
+        <article className="research-panel">
+          <div className="panel-title">
+            <div><span>Soft voting ensemble</span><h2>Bootstrap confusion matrix</h2></div>
+          </div>
+          {ensemble ? <ConfusionMatrix matrix={ensemble.confusion_matrix} labels={evaluation.labels} /> : <ResearchEmpty text="Evaluation report unavailable." />}
+        </article>
+      </div>
+
+      {mailboxMetrics.sampleCount > 0 && (
+        <article className="research-panel class-metrics-panel">
+          <div className="panel-title"><div><span>Current mailbox</span><h2>Precision, recall and F1 by category</h2></div></div>
+          <div className="class-metrics-table">
+            <div className="class-metrics-row class-metrics-head"><span>Category</span><span>Precision</span><span>Recall</span><span>F1</span><span>Support</span></div>
+            {mailboxMetrics.labels.map((label) => (
+              <div className="class-metrics-row" key={label}>
+                <strong>{titleCase(label)}</strong>
+                <span>{formatPercent(mailboxMetrics.perClass[label].precision)}</span>
+                <span>{formatPercent(mailboxMetrics.perClass[label].recall)}</span>
+                <span>{formatPercent(mailboxMetrics.perClass[label].f1)}</span>
+                <span>{mailboxMetrics.perClass[label].support}</span>
+              </div>
+            ))}
+          </div>
+        </article>
+      )}
+    </section>
+  );
+}
+
+function MetricCard({ label, value, detail }) {
+  return <article className="metric-card"><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
+}
+
+function ResearchEmpty({ text }) {
+  return <div className="research-empty">{text}</div>;
+}
+
+function ConfusionMatrix({ matrix, labels }) {
+  const maximum = Math.max(1, ...matrix.flat());
+  return (
+    <div className="confusion-wrap">
+      <span className="confusion-axis predicted-axis">Predicted class →</span>
+      <span className="confusion-axis actual-axis">Actual class →</span>
+      <div className="confusion-matrix" style={{ gridTemplateColumns: `72px repeat(${labels.length}, minmax(42px, 1fr))` }}>
+        <span />
+        {labels.map((label) => <strong className="matrix-label" key={`top-${label}`}>{shortCategory(label)}</strong>)}
+        {matrix.map((row, rowIndex) => (
+          <React.Fragment key={labels[rowIndex]}>
+            <strong className="matrix-label row-label">{shortCategory(labels[rowIndex])}</strong>
+            {row.map((value, columnIndex) => (
+              <span
+                className={`matrix-cell ${rowIndex === columnIndex ? "correct" : "error"}`}
+                key={`${rowIndex}-${columnIndex}`}
+                style={{ "--cell-opacity": 0.12 + (value / maximum) * 0.7 }}
+                title={`Actual ${labels[rowIndex]}, predicted ${labels[columnIndex]}: ${value}`}
+              >{value}</span>
+            ))}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -668,7 +1004,7 @@ function MessageList({ loading, mailboxMeta, mailboxTitle, messages, selectedId,
   );
 }
 
-function ReadingPane({ message, onAction, onQuickReply }) {
+function ReadingPane({ message, onAction, onGroundTruth, onQuickReply }) {
   return (
     <section className={`reading-pane ${message ? "has-message" : ""}`} aria-label="Selected message">
       {!message && <EmptyState title="Select a message" text="Open any mail to read, reply, forward, label, archive, or delete it." />}
@@ -702,6 +1038,16 @@ function ReadingPane({ message, onAction, onQuickReply }) {
                   )}
                 </div>
               )}
+              <label className="ground-truth-control">
+                <span>Research ground truth</span>
+                <select value={message.groundTruth || ""} onChange={(event) => onGroundTruth(message.id, event.target.value)}>
+                  <option value="">Not labelled</option>
+                  <option value="safe">Safe</option>
+                  <option value="threat">Threat / Malicious</option>
+                  <option value="phishing">Phishing</option>
+                  <option value="malware">Malware</option>
+                </select>
+              </label>
             </div>
             <div className="read-actions">
               {["close", "reply", "forward", "archive", "delete", "spam", "label"].map((action) => (
@@ -919,6 +1265,113 @@ function titleCase(value) {
 function labelDotClass(label) {
   if (label === SUSPICIOUS_LABEL_NAME) return "dot-suspicious";
   return `dot-${label.toLowerCase()}`;
+}
+
+function folderGlyph(folder) {
+  const glyphs = {
+    inbox: "▣",
+    all: "▤",
+    starred: "☆",
+    sent: "➤",
+    drafts: "▧",
+    archive: "▱",
+    spam: "⊘",
+    trash: "♲"
+  };
+  return glyphs[folder] || "□";
+}
+
+function displayNameFromEmail(email) {
+  const name = String(email || "User").split("@")[0].replace(/[._-]+/g, " ").trim();
+  return name.split(/\s+/).filter(Boolean).map((part) => titleCase(part)).join(" ") || "User";
+}
+
+function profileInitials(value) {
+  const parts = String(value || "User").replace(/@.*$/, "").split(/[\s._-]+/).filter(Boolean);
+  return parts.slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "U";
+}
+
+function calculateMailboxMetrics(messages) {
+  const labels = ["safe", "threat", "phishing", "malware"];
+  const samples = messages.filter((message) => (
+    labels.includes(message.groundTruth) && message.aiRisk?.status === "done" && labels.includes(message.aiRisk.category)
+  ));
+  const matrix = labels.map(() => labels.map(() => 0));
+  samples.forEach((message) => {
+    matrix[labels.indexOf(message.groundTruth)][labels.indexOf(message.aiRisk.category)] += 1;
+  });
+  const perClass = {};
+  labels.forEach((label, index) => {
+    const truePositive = matrix[index][index];
+    const falsePositive = matrix.reduce((total, row, rowIndex) => total + (rowIndex === index ? 0 : row[index]), 0);
+    const falseNegative = matrix[index].reduce((total, value, columnIndex) => total + (columnIndex === index ? 0 : value), 0);
+    const support = matrix[index].reduce((total, value) => total + value, 0);
+    const precision = truePositive + falsePositive ? truePositive / (truePositive + falsePositive) : 0;
+    const recall = truePositive + falseNegative ? truePositive / (truePositive + falseNegative) : 0;
+    perClass[label] = {
+      precision,
+      recall,
+      f1: precision + recall ? (2 * precision * recall) / (precision + recall) : 0,
+      support
+    };
+  });
+  const correct = matrix.reduce((total, row, index) => total + row[index], 0);
+  return {
+    labels,
+    matrix,
+    perClass,
+    sampleCount: samples.length,
+    accuracy: samples.length ? correct / samples.length : 0
+  };
+}
+
+function exportExperimentResults(messages) {
+  const metrics = calculateMailboxMetrics(messages);
+  const report = {
+    generatedAt: new Date().toISOString(),
+    notice: "Mailbox experiment export. Validate dataset provenance and ground-truth labels before research use.",
+    metrics,
+    samples: messages.map((message) => ({
+      messageId: message.id,
+      date: message.date,
+      sender: message.email,
+      subject: message.subject,
+      groundTruth: message.groundTruth || null,
+      prediction: message.aiRisk?.category || null,
+      suspicious: message.aiRisk?.suspicious ?? null,
+      riskScore: message.aiRisk?.riskScore ?? null,
+      indicators: message.aiRisk?.indicators || [],
+      layerScores: Object.fromEntries(Object.entries(message.aiRisk?.layers || {}).map(([name, layer]) => [name, layer.score]))
+    }))
+  };
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `maildesk-experiment-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function formatPercent(value) {
+  return `${Math.round(Number(value || 0) * 100)}%`;
+}
+
+function modelDisplayName(name) {
+  const names = {
+    logistic_regression: "Logistic Regression",
+    random_forest: "Random Forest",
+    xgboost: "XGBoost",
+    neural_classifier: "Neural Classifier",
+    soft_voting_ensemble: "Soft-voting Ensemble",
+    rule_based_binary_baseline: "Rule-based Baseline"
+  };
+  return names[name] || name;
+}
+
+function shortCategory(value) {
+  const names = { safe: "Safe", threat: "Threat", phishing: "Phish", malware: "Malware" };
+  return names[value] || titleCase(value);
 }
 
 function clamp(value, min, max) {
